@@ -1,5 +1,5 @@
 # A descriptive name for the workflow, shown in the GitHub Actions UI.
-name: Android Super Partition Repack (Build-Only)
+name: Android Super Partition Repack (Build & Release)
 
 # This section defines how the workflow is triggered.
 on:
@@ -73,7 +73,7 @@ jobs:
     - name: Free disk space (3/3) - Action (SlimHub)
       uses: rokibhasansagar/slimhub_actions@main
       with:
-        retain: '' 
+        retain: ''
     # --- END OF DISK SPACE CLEANUP ---
 
     - name: Install Dependencies
@@ -106,7 +106,7 @@ jobs:
       run: |
         cd work
         FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
-        
+
         if [ "${{ steps.cache-stock.outputs.cache-hit }}" != 'true' ]; then
           echo "==> No cache hit. Downloading stock firmware..."
           if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
@@ -117,22 +117,23 @@ jobs:
         else
             echo "==> Stock firmware cache was successfully restored."
         fi
-        
+
         if [ ! -s "stock_firmware.zip" ]; then echo "✗ CRITICAL ERROR: Failed to download or find stock firmware." && exit 1; fi
-        
-        unzip -o "stock_firmware.zip"
-        
-        AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
-        if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found." && ls -lR && exit 1; fi
-        
-        tar -xvf "$AP_FILE" --wildcards '*super.img*.lz4'
-        rm "$AP_FILE" 
-        rm -f BL_* CP_* HOME_CSC_* CSC_* stock_firmware.zip
-        
+
+        # Extract only the AP file to save space and time
+        AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -o -E "AP_[A-Z0-9_]+\.tar\.md5" | head -n 1)
+        unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
+        rm "stock_firmware.zip" # Remove the large zip file immediately
+
+        if [ -z "$AP_FILENAME" ]; then echo "✗ Error: AP file not found." && ls -lR && exit 1; fi
+
+        tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4'
+        rm "$AP_FILENAME"
+
         SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
         lz4 -d "$SUPER_LZ4" stock_super_sparse.img
         rm "$SUPER_LZ4"
-        
+
         if [ ! -f "stock_super_sparse.img" ]; then echo "✗ Error: Failed to create sparse stock_super.img." && exit 1; fi
 
     - name: Download and Prepare Custom system.img
@@ -140,7 +141,7 @@ jobs:
         cd work
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM." && exit 1; fi
-        
+
         FILE_TYPE=$(file -b custom_rom_package)
         case "$FILE_TYPE" in
           *"XZ compressed data"*)      mv custom_rom_package c.img.xz && unxz c.img.xz && mv c.img custom_system.img ;;
@@ -159,7 +160,7 @@ jobs:
           *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
           *)                            rm custom_rom_package; echo "✗ Error: Unsupported file type" && exit 1 ;;
         esac
-        
+
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
 
     - name: Prepare repacksuper.sh flags
@@ -171,7 +172,6 @@ jobs:
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
         if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
         if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
-        # This is the critical new part: add the user-provided "no flash" flag if it exists.
         if [ -n "${{ github.event.inputs.no_flash_flag }}" ]; then FLAGS="$FLAGS ${{ github.event.inputs.no_flash_flag }}"; fi
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
 
@@ -179,22 +179,50 @@ jobs:
       run: |
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
         ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super_sparse.img work/custom_system.img work/repacked_super.img
+        # Clean up large source images immediately after use
         rm -f work/stock_super_sparse.img work/custom_system.img
 
-    - name: Verify output and Create Tarball
+    - name: Verify, Rename, and Create Compressed Tarball
+      id: create_tarball
       run: |
         cd work
         if [ ! -f "repacked_super.img" ]; then echo "✗ Error: repacked_super.img not found." && ls -la && exit 1; fi
-        tar -cvf repacked_super.tar repacked_super.img
+        
+        # Rename the image to super.img as required
+        mv repacked_super.img super.img
+        
+        # Create a compressed tarball for smaller size
+        TARBALL_NAME="repacked_super_$(date +%Y%m%d).tar.gz"
+        tar -czvf "$TARBALL_NAME" super.img
+        
+        # Clean up the raw image file after tarring to save space for upload
+        rm super.img
 
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+        echo "tarball_path=work/$TARBALL_NAME" >> $GITHUB_OUTPUT
+        echo "tarball_name=$TARBALL_NAME" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release with Artifact
+      uses: softprops/action-gh-release@v2
       with:
-        name: repacked-super-img
-        path: |
-          work/repacked_super.img
-          work/repacked_super.tar
-        retention-days: 7
+        # The tag will be created automatically, based on the current date and time
+        tag_name: repack-${{ github.run_id }}-${{ github.run_attempt }}
+        name: "Repacked Super Image - ${{ github.run_id }}"
+        body: |
+          ## Repacked Super Image
+          This release was generated automatically by the GitHub Actions workflow.
+
+          ### Source Files
+          *   **Stock Firmware:** `${{ github.event.inputs.stock_firmware_url }}`
+          *   **Custom ROM:** `${{ github.event.inputs.custom_system_url }}`
+        # Upload the compressed tarball
+        files: ${{ steps.create_tarball.outputs.tarball_path }}
+        # This will create a draft release first, then publish it
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This is critical: ignore failures during upload (e.g., out of space)
+      continue-on-error: true
 
     - name: Final Space Check
       if: always()
