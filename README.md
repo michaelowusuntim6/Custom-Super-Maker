@@ -34,7 +34,7 @@ Think of it as Google’s “smart” storage container that dynamically resizes
 2. Go to the "Actions" Tab on your forked repo.
 
 
-3. Select the Workflow: Choose "Android Super Partition Repack (Build-Only)".
+3. Select the Workflow: Choose "Android Super Partition Repack (Stable)".
 
 
 4. Click “Run Workflow” and fill in:
