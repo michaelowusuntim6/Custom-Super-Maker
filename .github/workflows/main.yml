@@ -15,7 +15,7 @@ on:
         default: false
       stock_firmware_url:
         description: 'URL to the stock firmware (Direct HTTP, MEGA.nz, etc.). Required if A04s is not selected.'
-        required: false # This is now optional and validated in the first step.
+        required: false # Validated in the first step.
         type: string
       custom_system_url:
         description: 'Custom ROM download URL (.img, .img.xz, .zip supported)'
@@ -87,7 +87,7 @@ jobs:
         sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip p7zip-full file wget curl megatools f2fs-tools python3-pip
         pip install gdown
 
-    # This new step validates user inputs to ensure the workflow can proceed.
+    # This step validates user inputs to ensure the workflow can proceed.
     - name: Validate Inputs
       run: |
         if [[ "${{ github.event.inputs.for_samsung_a04s }}" == "false" && -z "${{ github.event.inputs.stock_firmware_url }}" ]]; then
@@ -126,31 +126,20 @@ jobs:
     - name: Download and Extract Stock Firmware
       run: |
         cd work
-        # --- Conditional Download Logic ---
         if [[ "${{ github.event.inputs.for_samsung_a04s }}" == "true" ]]; then
           echo "==> Using pre-configured Samsung A04s firmware."
-          # Download using gdown with the provided Google Drive file ID.
-          gdown --output stock_firmware.zip '1j27zk_T6cfUcJ-AQHX9DeeXLxQaMOM8p'
+          gdown --output stock_firmware.zip '1j2z7k_T6cfUcJ-AQHX9DeeXLxQaMOM8p'
         else
           echo "==> Using provided Stock Firmware URL."
           FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
-          # This condition checks if the cache was restored in the previous step.
           if [ "${{ steps.cache-stock.outputs.cache-hit }}" != 'true' ]; then
             echo "==> No cache hit. Downloading stock firmware..."
-            if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
-              megadl -o stock_firmware.zip "$FIRMWARE_URL"
-            else
-              wget --user-agent="Mozilla/5.0" --content-disposition -O stock_firmware.zip --tries=5 --wait=10 "$FIRMWARE_URL"
-            fi
+            if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then megadl -o stock_firmware.zip "$FIRMWARE_URL"; else wget --user-agent="Mozilla/5.0" --content-disposition -O stock_firmware.zip --tries=5 --wait=10 "$FIRMWARE_URL"; fi
           else
-              echo "==> Stock firmware cache was successfully restored."
+            echo "==> Stock firmware cache was successfully restored."
           fi
         fi
-        # --- End of Conditional Download Logic ---
-
         if [ ! -s "stock_firmware.zip" ]; then echo "✗ CRITICAL ERROR: Failed to download or find stock firmware." && exit 1; fi
-        
-        # The rest of the extraction process is the same for both cases.
         AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar\.md5" | head -n 1)
         if [ -z "$AP_FILENAME" ]; then echo "✗ Error: AP file not found."; unzip -l "stock_firmware.zip"; exit 1; fi
         unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
@@ -185,15 +174,27 @@ jobs:
         esac
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
 
-    # This step ensures the image is a raw image to guarantee it can be mounted.
-    - name: Convert to Raw Image (if necessary)
+    # REVISED STEP: This now gracefully handles the simg2img error by attempting a conversion
+    # and using the original file if the conversion fails. This is the most robust method.
+    - name: Ensure Raw Image (by attempting conversion)
       run: |
         cd work
-        echo "==> Ensuring custom_system.img is a raw image..."
-        mv custom_system.img custom_system.temp.img
-        simg2img custom_system.temp.img custom_system.img
-        rm custom_system.temp.img
-        echo "==> Conversion complete."
+        echo "==> Attempting to convert custom_system.img to raw (if it is sparse)..."
+        # Create a backup of the original image.
+        mv custom_system.img custom_system.original.img
+        
+        # Attempt the conversion. 'if simg2img...' will check the exit code of the command.
+        if simg2img custom_system.original.img custom_system.img; then
+          # This block executes if simg2img was successful (exit code 0).
+          echo "==> Success: Image was sparse and has been converted to raw."
+          rm custom_system.original.img # Clean up the backup.
+        else
+          # This block executes if simg2img failed (e.g., "Invalid sparse file format").
+          echo "==> Info: simg2img failed, which is expected for a raw image. Using the original file."
+          # Restore the original image since the conversion failed.
+          mv custom_system.original.img custom_system.img
+        fi
+        echo "==> Image is ready for the next step."
 
     # This step modifies the build.prop file inside the custom system image for branding.
     - name: Modify build.prop for Branding
