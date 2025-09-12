@@ -14,7 +14,7 @@ on:
         required: true
         type: string
       custom_system_url:
-        description: 'Custom ROM download URL (.img, .img.xz, .img.gz, .zip supported)'
+        description: 'Custom ROM download URL (.img, .img.xz, .zip supported)'
         required: true
         type: string
       upload_to_release:
@@ -55,148 +55,89 @@ on:
 # A workflow is made up of one or more 'jobs'. This job is named 'repack-super'.
 jobs:
   repack-super:
-    # We use a larger runner to avoid "No space left on device" errors, but your cleanup scripts are essential.
-    # 'runs-on' specifies the type of virtual machine to run the job on. 'ubuntu-latest' is a standard Linux environment.
+    # 'runs-on' specifies the type of virtual machine to run the job on.
     runs-on: ubuntu-latest
-    # 'permissions' defines the permissions granted to the GITHUB_TOKEN for this job.
-    # 'contents: write' is required to create GitHub Releases.
+    # 'permissions' are required to create GitHub Releases.
     permissions:
       contents: write
     # 'steps' are a sequence of tasks that will be executed as part of the job.
     steps:
     # This step checks out a copy of your repository onto the runner.
-    # This allows the workflow to access files in the repository, like the 'repacksuper.sh' script.
     - name: Checkout repository
       uses: actions/checkout@v4
 
     # --- START OF DISK SPACE CLEANUP ---
-    # This section is crucial for preventing "No space left on device" errors on GitHub's runners.
-    # It aggressively removes pre-installed software and cached files to maximize available space.
-    - name: Free disk space (1/3) - Manual Cleanup
+    - name: Free disk space
       run: |
         echo "Initial disk space:"
         df -h
-        # Remove large pre-installed software packages that are not needed for this workflow.
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        # Prune Docker images to free up significant space.
         sudo docker image prune --all --force
         echo "Disk space after manual cleanup:"
         df -h
-    # This step uses a pre-made GitHub Action to further clean up the runner's tool cache.
-    - name: Free disk space (2/3) - Action (Tool Cache)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: true
-    # This step uses another action to slim down the runner environment even more.
-    - name: Free disk space (3/3) - Action (SlimHub)
-      uses: rokibhasansagar/slimhub_actions@main
-      with:
-        retain: ''
-    # --- END OF DISK SPACE CLEANUP ---
 
     # This step installs the necessary dependencies for the script to run.
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        # Install what's needed for building, including f2fs-tools for mounting f2fs filesystems.
-        sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip gzip p7zip-full file wget curl megatools f2fs-tools
+        sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip p7zip-full file wget curl megatools f2fs-tools
 
     # This step ensures the main script is present and executable.
     - name: Verify and Prepare Script
       run: |
-        # Check if the repacksuper.sh script exists in the repository root.
         if [ ! -f "./repacksuper.sh" ]; then echo "✗ Error: repacksuper.sh not found" && exit 1; fi
-        # Make the script executable so it can be run.
         chmod +x ./repacksuper.sh
 
-    # This step creates a dedicated directory for all the work to keep the root directory clean.
+    # This step creates a dedicated directory for all the work.
     - name: Create working directory
       run: mkdir -p work
 
-    # This step generates a unique hash of the firmware URL.
-    # This hash is used as part of the cache key, so if the URL changes, a new cache is created.
+    # This step generates a unique hash of the firmware URL for caching.
     - name: Generate Firmware URL Hash for Cache
       id: generate_hash
       run: |
         echo "fw_hash=$(echo -n "${{ github.event.inputs.stock_firmware_url }}" | md5sum | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
-    # This step caches the downloaded stock firmware to speed up subsequent runs with the same URL.
+    # This step caches the downloaded stock firmware to speed up subsequent runs.
     - name: Cache Stock Firmware
       id: cache-stock
       uses: actions/cache@v4
       with:
-        # The path to the file that should be cached.
         path: work/stock_firmware.zip
-        # The cache key is a combination of the runner's OS and the firmware URL hash.
-        # If a cache with this exact key is found, the file is restored automatically.
         key: ${{ runner.os }}-stock-${{ steps.generate_hash.outputs.fw_hash }}
 
-    # This step downloads and extracts the stock super.img from the firmware package.
+    # This step downloads and extracts the stock super.img.
     - name: Download and Extract Stock Firmware
       run: |
         cd work
         FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
-
-        # This condition checks if the cache was restored in the previous step.
         if [ "${{ steps.cache-stock.outputs.cache-hit }}" != 'true' ]; then
           echo "==> No cache hit. Downloading stock firmware..."
-          # Handle MEGA.nz links using megadl.
-          if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
-            megadl -o stock_firmware.zip "$FIRMWARE_URL"
-          # Handle direct HTTP links using wget.
-          else
-            wget --user-agent="Mozilla/5.0" --content-disposition -O stock_firmware.zip --tries=5 --wait=10 "$FIRMWARE_URL"
-          fi
+          if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then megadl -o stock_firmware.zip "$FIRMWARE_URL"; else wget --user-agent="Mozilla/5.0" --content-disposition -O stock_firmware.zip --tries=5 --wait=10 "$FIRMWARE_URL"; fi
         else
-            echo "==> Stock firmware cache was successfully restored."
+          echo "==> Stock firmware cache was successfully restored."
         fi
-
-        # Verify that the firmware was downloaded or restored successfully.
         if [ ! -s "stock_firmware.zip" ]; then echo "✗ CRITICAL ERROR: Failed to download or find stock firmware." && exit 1; fi
-
-        # Find the AP filename (which contains the main system images) from the zip archive contents.
         AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar\.md5" | head -n 1)
-
-        # If the AP file is not found, print debug info and exit.
-        if [ -z "$AP_FILENAME" ]; then
-            echo "✗ Error: AP file not found in stock_firmware.zip."
-            echo "Listing contents for debugging:"
-            unzip -l "stock_firmware.zip"
-            exit 1
-        fi
-
-        # Extract ONLY the AP file. '-j' junks the path, placing it in the current directory.
+        if [ -z "$AP_FILENAME" ]; then echo "✗ Error: AP file not found."; unzip -l "stock_firmware.zip"; exit 1; fi
         unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
-        
-        # CRITICAL: Immediately remove the large zip file to free up disk space.
         rm "stock_firmware.zip"
-
-        # Now extract the super.img from the AP tarball. It's usually compressed with lz4.
         tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4'
-        # Clean up the AP tarball as well.
         rm "$AP_FILENAME"
-
-        # Decompress the lz4 file to get the sparse super image.
         SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
         lz4 -d "$SUPER_LZ4" stock_super_sparse.img
         rm "$SUPER_LZ4"
-
-        # Final check to ensure the sparse super.img exists.
         if [ ! -f "stock_super_sparse.img" ]; then echo "✗ Error: Failed to create sparse stock_super.img." && exit 1; fi
 
-    # This step downloads and prepares the custom system.img from the provided URL.
+    # This step downloads and prepares the custom system.img.
     - name: Download and Prepare Custom system.img
       run: |
         cd work
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
-        # Verify that the custom ROM was downloaded successfully.
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM." && exit 1; fi
-
-        # Identify the file type and extract/convert it accordingly.
         FILE_TYPE=$(file -b custom_rom_package)
         case "$FILE_TYPE" in
           *"XZ compressed data"*)      mv custom_rom_package c.img.xz && unxz c.img.xz && mv c.img custom_system.img ;;
-          *"gzip compressed data"*)    mv custom_rom_package c.img.gz && gunzip c.img.gz && mv c.img custom_system.img ;;
           *"Zip archive data"*)
             unzip -o custom_rom_package ; rm custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
@@ -207,146 +148,120 @@ jobs:
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in 7z archive." && exit 1; fi
             mv "$SYSTEM_IMG_FILE" custom_system.img ;;
-          *"Android sparse image"*)    mv custom_rom_package c_sparse.img && simg2img c_sparse.img custom_system.img && rm c_sparse.img ;;
-          *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
-          *)                            rm custom_rom_package; echo "✗ Error: Unsupported file type: $FILE_TYPE" && exit 1 ;;
+          *)                            mv custom_rom_package custom_system.img ;;
         esac
-
-        # Final check to ensure the custom_system.img was created.
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
-    
+
+    # NEW STEP: Ensure the image is a raw image to guarantee it can be mounted.
+    # This fixes the "bad superblock" error by converting sparse images that were misidentified.
+    - name: Convert to Raw Image (if necessary)
+      run: |
+        cd work
+        echo "==> Ensuring custom_system.img is a raw image..."
+        # Create a temporary name for the output.
+        mv custom_system.img custom_system.temp.img
+        # simg2img will convert a sparse image to raw, or just copy a raw image.
+        simg2img custom_system.temp.img custom_system.img
+        # Clean up the temporary file.
+        rm custom_system.temp.img
+        echo "==> Conversion complete."
+
     # This step modifies the build.prop file inside the custom system image for branding.
-    # It now automatically detects the filesystem type to prevent mount errors.
     - name: Modify build.prop for Branding
       run: |
         cd work
         echo "==> Detecting filesystem type for custom_system.img..."
-        # Use blkid to get the filesystem type. Redirect stderr to /dev/null to suppress noise.
         FS_TYPE=$(sudo blkid -o value -s TYPE custom_system.img 2>/dev/null)
         echo "==> Filesystem detected: ${FS_TYPE:-'Unknown'}"
-
-        # Use a case statement to handle different filesystem types.
         case "$FS_TYPE" in
           "ext4"|"f2fs")
             echo "==> Filesystem is '$FS_TYPE'. Attempting to mount for modification..."
             mkdir -p mnt_system
-            # Mount the image, explicitly specifying the type for reliability.
             if sudo mount -t "$FS_TYPE" -o loop custom_system.img mnt_system; then
               echo "==> Mount successful."
-              # Check if build.prop exists at the standard location.
               if [ -f "mnt_system/system/build.prop" ]; then
                 echo "==> Modifying build.prop..."
                 sudo sed -i 's|ro.build.id=.*|ro.build.id=Built.By.Minh2077.Script|g' mnt_system/system/build.prop
                 echo "==> build.prop modified."
               else
-                echo "⚠️ Warning: build.prop not found at mnt_system/system/build.prop. Skipping modification."
+                echo "⚠️ Warning: build.prop not found at mnt_system/system/build.prop. Skipping."
               fi
-              # Unmount the image to save changes.
               sudo umount mnt_system
               rm -rf mnt_system
             else
-              # If mount fails for some other reason, report it but don't fail the workflow.
-              echo "✗ Error: Failed to mount the $FS_TYPE image. Skipping build.prop modification."
+              echo "✗ Warning: Failed to mount the $FS_TYPE image. Skipping build.prop modification."
             fi
             ;;
           "erofs")
             echo "⚠️ Warning: Filesystem is EROFS (read-only). Modification is not possible. Skipping."
             ;;
           *)
-            echo "⚠️ Warning: Unsupported or unknown filesystem type ('${FS_TYPE:-'Unknown'}'). Skipping build.prop modification."
+            echo "⚠️ Warning: Unsupported or unknown filesystem ('${FS_TYPE:-'Unknown'}'). Skipping modification."
             ;;
         esac
 
-    # This step prepares the command-line flags for the 'repacksuper.sh' script based on the workflow inputs.
+    # This step prepares the command-line flags for the 'repacksuper.sh' script.
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
       run: |
-        # Start with the mandatory flag for the root/working directory.
         FLAGS="-r $(pwd)/work"
-        # Append flags based on the boolean inputs provided by the user.
         if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
         if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then FLAGS="$FLAGS -p"; fi
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
         if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
         if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
-        # Append the no_flash_flag if it's provided.
         if [ -n "${{ github.event.inputs.no_flash_flag }}" ]; then FLAGS="$FLAGS ${{ github.event.inputs.no_flash_flag }}"; fi
-        # Output the generated flags string for use in the next step.
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
 
     # This is the core step where the super partition is repacked.
     - name: Run repacksuper.sh
       run: |
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
-        # Execute the script with the prepared flags and the paths to the input and output images.
         ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super_sparse.img work/custom_system.img work/repacked_super.img
-        # Clean up the large source images immediately after use to save disk space.
         rm -f work/stock_super_sparse.img work/custom_system.img
 
-    # This step verifies the output, renames it, and packages it into a compressed tarball.
-    - name: Verify, Rename, and Create Compressed Tarball
+    # This step verifies, renames, and creates an uncompressed tarball as requested.
+    - name: Verify, Rename, and Create Tarball
       id: create_tarball
       run: |
         cd work
-        # Check if the repacking was successful and the output file exists.
         if [ ! -f "repacked_super.img" ]; then echo "✗ Error: repacked_super.img not found." && ls -la && exit 1; fi
-        
-        # Rename the image to 'super.img' for consistency.
         mv repacked_super.img super.img
-        
-        # Create a compressed tarball for a smaller artifact size. The name includes the date.
-        TARBALL_NAME="repacked_super_$(date +%Y%m%d).tar.gz"
-        tar -czvf "$TARBALL_NAME" super.img
-        
-        # Clean up the raw image file after tarring to save space for the upload steps.
+        # Create an uncompressed tarball (-cvf) as requested.
+        TARBALL_NAME="repacked_super_$(date +%Y%m%d).tar"
+        tar -cvf "$TARBALL_NAME" super.img
         rm super.img
-
-        # Output the path and name of the tarball for use in later steps.
         echo "tarball_path=work/$TARBALL_NAME" >> $GITHUB_OUTPUT
         echo "tarball_name=$TARBALL_NAME" >> $GITHUB_OUTPUT
 
     # This step uploads the final tarball as a workflow artifact.
-    # Workflow artifacts are files associated with a workflow run and can be downloaded from the Actions tab.
-    # This step will ALWAYS run.
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        # The name of the artifact to be created.
         name: repacked-super-image
-        # The path to the file to upload.
         path: ${{ steps.create_tarball.outputs.tarball_path }}
 
-    # This step creates a GitHub Release and attaches the final tarball as a release asset.
-    # This step ONLY runs if the user chose 'true' for the 'upload_to_release' input.
+    # This step creates a GitHub Release if the user selected the option.
     - name: Create GitHub Release with Artifact
-      # The 'if' condition makes this step conditional.
       if: github.event.inputs.upload_to_release == 'true'
       uses: softprops/action-gh-release@v2
       with:
-        # The tag will be created automatically, based on the unique run ID and attempt number.
         tag_name: repack-${{ github.run_id }}-${{ github.run_attempt }}
-        # The title of the release.
         name: "Repacked Super Image - ${{ github.run_id }}"
-        # The body/description of the release, including source file information.
         body: |
           ## Repacked Super Image
           This release was generated automatically by the GitHub Actions workflow.
-
           ### Source Files
           *   **Stock Firmware:** `${{ github.event.inputs.stock_firmware_url }}`
           *   **Custom ROM:** `${{ github.event.inputs.custom_system_url }}`
-        # The path to the file to upload as a release asset.
         files: ${{ steps.create_tarball.outputs.tarball_path }}
-        # 'draft: false' and 'prerelease: false' ensure the release is published immediately.
         draft: false
         prerelease: false
       env:
-        # The GITHUB_TOKEN is a secret automatically provided by GitHub Actions to authenticate API requests.
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # This is critical: ignore failures during upload (e.g., out of space) to prevent the entire workflow from failing.
       continue-on-error: true
 
-    # This step runs at the end of the job, regardless of whether previous steps succeeded or failed.
+    # This step runs at the end of the job to show final disk space.
     - name: Final Space Check
       if: always()
       run: |
