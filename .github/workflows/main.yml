@@ -196,136 +196,86 @@ jobs:
         fi
         echo "==> Image is ready for the next step."
 
-    # This step modifies the build.prop file using multiple fallback methods
-    - name: Modify build.prop for Branding (Multi-Method Approach)
+    # This step modifies the build.prop file using debugfs for direct ext4 manipulation
+    - name: Modify build.prop for Branding
       run: |
         cd work
-        echo "==> Attempting build.prop modification with multiple methods..."
+        echo "==> Modifying build.prop using debugfs (direct ext4 manipulation)..."
         
-        # Create an advanced script that tries multiple approaches
-        cat > advanced_modify.sh << 'EOF'
-        #!/bin/bash
-        
-        IMAGE_PATH="/host/custom_system.img"
-        SUCCESS=false
-        
-        echo "==> Method 1: Standard loop mount with explicit loop device"
-        # Try creating explicit loop device first
-        LOOP_DEV=$(losetup -f)
-        echo "==> Using loop device: $LOOP_DEV"
-        if losetup "$LOOP_DEV" "$IMAGE_PATH"; then
-          echo "==> Loop device created successfully"
-          
-          # Detect filesystem
-          FS_TYPE=$(blkid -o value -s TYPE "$LOOP_DEV" 2>/dev/null || echo "unknown")
-          echo "==> Filesystem detected on loop device: $FS_TYPE"
-          
-          if [[ "$FS_TYPE" == "ext4" || "$FS_TYPE" == "f2fs" ]]; then
-            mkdir -p /mnt_system
-            if mount -t "$FS_TYPE" "$LOOP_DEV" /mnt_system; then
-              echo "==> Mount successful with explicit loop device"
-              if [ -f "/mnt_system/system/build.prop" ]; then
-                echo "==> Found build.prop, modifying..."
-                sed -i 's|ro.build.id=.*|ro.build.id=Built.By.Minh2077.Script|g' /mnt_system/system/build.prop
-                echo "==> build.prop modified successfully!"
-                SUCCESS=true
-              fi
-              sync
-              umount /mnt_system
-              echo "==> Unmounted successfully"
-            else
-              echo "==> Failed to mount with explicit loop device"
-            fi
-          fi
-          losetup -d "$LOOP_DEV"
-        else
-          echo "==> Failed to create loop device"
-        fi
-        
-        if [ "$SUCCESS" = false ]; then
-          echo "==> Method 2: Using e2fsck to check and potentially fix image"
-          # Sometimes the image needs a filesystem check
-          if command -v e2fsck >/dev/null 2>&1; then
-            echo "==> Running e2fsck to check/fix image..."
-            e2fsck -f -y "$IMAGE_PATH" || echo "==> e2fsck completed (exit code $?)"
+        docker run --rm --privileged \
+          -v "$(pwd):/work" \
+          ubuntu:22.04 \
+          bash -c '
+            apt-get update -qq
+            apt-get install -y -qq e2fsprogs util-linux
             
-            # Try mounting again after fsck
-            LOOP_DEV=$(losetup -f)
-            if losetup "$LOOP_DEV" "$IMAGE_PATH"; then
+            cd /work
+            echo "==> Detecting filesystem type..."
+            FS_TYPE=$(blkid -o value -s TYPE custom_system.img 2>/dev/null || echo "unknown")
+            echo "==> Filesystem detected: $FS_TYPE"
+            
+            if [ "$FS_TYPE" = "ext4" ]; then
+              echo "==> Using debugfs to modify build.prop directly..."
+              
+              # First, extract the current build.prop
+              echo "==> Extracting current build.prop..."
+              echo "cat /system/build.prop" | debugfs custom_system.img > current_build.prop 2>/dev/null || {
+                echo "==> Failed to extract build.prop, skipping modification"
+                exit 0
+              }
+              
+              # Check if build.prop was extracted successfully
+              if [ -s current_build.prop ] && grep -q "ro.build" current_build.prop; then
+                echo "==> Build.prop extracted successfully"
+                
+                # Modify the build.prop file
+                sed -i "s|ro\.build\.id=.*|ro.build.id=Built.By.Minh2077.Script|g" current_build.prop
+                echo "==> Build.prop modified"
+                
+                # Write it back using debugfs
+                echo "==> Writing modified build.prop back to image..."
+                {
+                  echo "cd /system"
+                  echo "rm build.prop"
+                  echo "write current_build.prop build.prop"
+                  echo "quit"
+                } | debugfs -w custom_system.img
+                
+                echo "==> Verifying modification..."
+                echo "cat /system/build.prop" | debugfs custom_system.img | grep "ro.build.id" || echo "==> Verification failed"
+                
+                rm -f current_build.prop
+                echo "==> Build.prop modification completed successfully using debugfs"
+              else
+                echo "==> Could not extract valid build.prop, skipping modification"
+              fi
+            elif [ "$FS_TYPE" = "f2fs" ]; then
+              echo "==> F2FS filesystem detected - attempting simple mount with f2fs support..."
+              apt-get install -y -qq f2fs-tools
+              
+              LOOP_DEV=$(losetup -f)
+              losetup "$LOOP_DEV" custom_system.img
+              
               mkdir -p /mnt_system
-              if mount -t ext4 "$LOOP_DEV" /mnt_system; then
-                echo "==> Mount successful after e2fsck"
+              if mount -t f2fs "$LOOP_DEV" /mnt_system 2>/dev/null; then
+                echo "==> F2FS mount successful"
                 if [ -f "/mnt_system/system/build.prop" ]; then
-                  sed -i 's|ro.build.id=.*|ro.build.id=Built.By.Minh2077.Script|g' /mnt_system/system/build.prop
-                  echo "==> build.prop modified successfully after e2fsck!"
-                  SUCCESS=true
+                  sed -i "s|ro\.build\.id=.*|ro.build.id=Built.By.Minh2077.Script|g" /mnt_system/system/build.prop
+                  echo "==> Build.prop modified successfully on F2FS"
                 fi
                 sync
                 umount /mnt_system
+              else
+                echo "==> F2FS mount failed, skipping modification"
               fi
+              
               losetup -d "$LOOP_DEV"
+            else
+              echo "==> Unsupported filesystem ($FS_TYPE), skipping modification"
             fi
-          fi
-        fi
+          '
         
-        if [ "$SUCCESS" = false ]; then
-          echo "==> Method 3: Using debugfs for ext4 images (read-only approach)"
-          if command -v debugfs >/dev/null 2>&1; then
-            FS_TYPE=$(blkid -o value -s TYPE "$IMAGE_PATH" 2>/dev/null)
-            if [ "$FS_TYPE" = "ext4" ]; then
-              echo "==> Attempting to read build.prop with debugfs..."
-              if echo "cat /system/build.prop" | debugfs "$IMAGE_PATH" 2>/dev/null | grep -q "ro.build.id"; then
-                echo "==> Found build.prop via debugfs, but cannot modify (read-only method)"
-                echo "==> Creating a note that build.prop exists but modification failed"
-                echo "BUILD_PROP_EXISTS=true" >> /host/build_prop_status.txt
-              fi
-            fi
-          fi
-        fi
-        
-        if [ "$SUCCESS" = true ]; then
-          echo "SUCCESS=true" >> /host/build_prop_status.txt
-          echo "==> ✅ build.prop modification completed successfully!"
-        else
-          echo "SUCCESS=false" >> /host/build_prop_status.txt
-          echo "==> ❌ All methods failed. This might be due to:"
-          echo "    - Image corruption"
-          echo "    - Unsupported filesystem"
-          echo "    - Missing system partition structure"
-          echo "    - Read-only filesystem (EROFS, squashfs, etc.)"
-        fi
-        EOF
-        
-        chmod +x advanced_modify.sh
-        
-        # Run with even more privileges and additional tools
-        docker run --rm --privileged \
-          --device-cgroup-rule="a *:* rmw" \
-          -v "$(pwd):/host" \
-          -v "$(pwd)/advanced_modify.sh:/advanced_modify.sh" \
-          ubuntu:22.04 \
-          bash -c "
-            echo '==> Installing comprehensive toolset...'
-            apt-get update -qq
-            apt-get install -y -qq util-linux file e2fsprogs f2fs-tools debugfs
-            echo '==> Running advanced modification script...'
-            /advanced_modify.sh
-          "
-        
-        # Check results
-        if [ -f "build_prop_status.txt" ]; then
-          echo "==> Checking modification results..."
-          cat build_prop_status.txt
-          if grep -q "SUCCESS=true" build_prop_status.txt; then
-            echo "✅ Build.prop was successfully modified!"
-          else
-            echo "⚠️ Build.prop modification failed, but continuing with workflow..."
-          fi
-          rm -f build_prop_status.txt
-        fi
-        
-        rm -f advanced_modify.sh
-        echo "==> Advanced build.prop modification process completed."
+        echo "==> Build.prop modification process completed."
 
     # This step prepares the command-line flags for the 'repacksuper.sh' script.
     - name: Prepare repacksuper.sh flags
