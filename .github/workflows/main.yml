@@ -229,7 +229,7 @@ jobs:
                 echo "==> Build.prop extracted successfully"
                 
                 # Modify the build.prop file
-                sed -i "s|ro\.build\.id=.*|ro.build.id=Built.By.Minh2077.Script|g" current_build.prop
+                sed -i "s|ro\.build\.id=.*|ro.build.display.id=Built.By.Minh2077.Script|g" current_build.prop
                 echo "==> Build.prop modified"
                 
                 # Write it back using debugfs
