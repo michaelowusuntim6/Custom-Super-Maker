@@ -165,6 +165,7 @@ Some basic flashing knowledge (Odin or Heimdall)
 - **"AP file not found"**: Make sure you're using the AP_*.tar.md5 file, not just any firmware blob.
 - **"Unsupported file format"**: Use a proper .img, .xz, .gz, or .zip with system.img inside.
 - **Not booting?**: Format data in recovery, check your ROM architecture (arm64-ab), and ensure the Android version matches or exceeds stock.
+- Btw i recommend using an custom ROM using ext4, erofs wont work
 
 ---
 
