@@ -317,6 +317,18 @@ jobs:
         name: repacked-super-image
         path: ${{ steps.create_tarball.outputs.tarball_path }}
 
+    # NEW STEP: This splits the tarball into 1.9GB chunks for the release.
+    - name: Split Tarball for Release
+      if: github.event.inputs.upload_to_release == 'true'
+      id: split_files
+      run: |
+        cd work
+        TARBALL_NAME=${{ steps.create_tarball.outputs.tarball_name }}
+        split -b 1900M -d "$TARBALL_NAME" "${TARBALL_NAME}."
+        rm "$TARBALL_NAME"
+        # The 'files' output will be a newline-separated list of the split files.
+        echo "files=$(ls ${TARBALL_NAME}.* | xargs -n 1 -I {} echo "work/{}" | tr '\n' ',')" >> $GITHUB_OUTPUT
+
     # This step creates a GitHub Release if the user selected the option.
     - name: Create GitHub Release with Artifact
       if: github.event.inputs.upload_to_release == 'true'
@@ -327,10 +339,21 @@ jobs:
         body: |
           ## Repacked Super Image
           This release was generated automatically by the GitHub Actions workflow.
+
+          **To reassemble the file, download all `repacked_super_*.tar.*` parts and run the following command:**
+          ### On Linux or macOS:
+          ```bash
+          cat repacked_super_*.tar.* > repacked_super.tar
+          ```
+          ### On Windows (Command Prompt):
+          ```cmd
+          copy /b repacked_super_*.tar.00 + repacked_super_*.tar.01 + ... repacked_super.tar
+          ```
+
           ### Source Files
           *   **Stock Firmware:** `${{ github.event.inputs.for_samsung_a04s == 'true' && 'Pre-configured for Samsung A04s' || github.event.inputs.stock_firmware_url }}`
           *   **Custom ROM:** `${{ github.event.inputs.custom_system_url }}`
-        files: ${{ steps.create_tarball.outputs.tarball_path }}
+        files: ${{ steps.split_files.outputs.files }}
         draft: false
         prerelease: false
       env:
@@ -343,3 +366,4 @@ jobs:
       run: |
         echo "Final disk space:"
         df -h
+        
