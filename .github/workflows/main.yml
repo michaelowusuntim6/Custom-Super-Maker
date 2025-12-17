@@ -3,13 +3,17 @@ name: Android Super Repack (Universal FS)
 on:
   workflow_dispatch:
     inputs:
-      for_samsung_a04s:
-        description: 'Use pre-configured Samsung A04s firmware?'
+      device_preset:
+        description: 'Select Stock Firmware Source'
         required: true
-        type: boolean
-        default: false
+        default: 'none'
+        type: choice
+        options:
+        - 'none (Use Custom URL below)'
+        - 'Samsung A04s (64GB)'
+        - 'Samsung A15 (128/256GB)'
       stock_firmware_url:
-        description: 'Stock Firmware URL (Required if not A04s)'
+        description: 'Custom Stock Firmware URL (Required if preset is none)'
         required: false
         type: string
       custom_system_url:
@@ -51,7 +55,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # Disk Cleanup to prevent running out of space during repack
+    # Disk Cleanup
     - name: Free disk space
       uses: jlumbroso/free-disk-space@main
       with:
@@ -65,7 +69,6 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        # Added 'erofs-utils' for modern android support and 'android-sdk-libsparse-utils' for simg2img
         sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip p7zip-full file wget curl megatools f2fs-tools erofs-utils python3-pip
         pip install gdown
         curl -fsSL https://get.docker.com -o get-docker.sh
@@ -80,20 +83,45 @@ jobs:
     - name: Download Stock Firmware
       run: |
         cd work
-        if [[ "${{ github.event.inputs.for_samsung_a04s }}" == "true" ]]; then
-          gdown --output stock_firmware.zip '1j27zk_T6cfUcJ-AQHX9DeeXLxQaMOM8p'
+        PRESET="${{ github.event.inputs.device_preset }}"
+        
+        if [[ "$PRESET" == "Samsung A04s (64GB)" ]]; then
+          echo "==> Downloading Samsung A04s Firmware..."
+          # File ID: 1C9GtYTn1EZ4sQN7qfJeWN6gxDj_WbgY-
+          gdown --output stock_firmware.zip '1C9GtYTn1EZ4sQN7qfJeWN6gxDj_WbgY-'
+          
+        elif [[ "$PRESET" == "Samsung A15 (128/256GB)" ]]; then
+          echo "==> Downloading Samsung A15 Firmware..."
+          # File ID: 12FoeBkPDHddj4lzd-T6pjHRQ8Ey3c2U8
+          gdown --output stock_firmware.zip '12FoeBkPDHddj4lzd-T6pjHRQ8Ey3c2U8'
+          
         else
+          echo "==> Using Custom URL..."
           FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
-          if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then megadl -o stock_firmware.zip "$FIRMWARE_URL"; else wget --content-disposition -O stock_firmware.zip "$FIRMWARE_URL"; fi
+          if [ -z "$FIRMWARE_URL" ]; then echo "✗ Error: No preset selected and no URL provided." && exit 1; fi
+          
+          if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then 
+            megadl -o stock_firmware.zip "$FIRMWARE_URL"
+          else 
+            wget --content-disposition -O stock_firmware.zip "$FIRMWARE_URL"
+          fi
         fi
         
-        # Robust extraction logic
+        if [ ! -s "stock_firmware.zip" ]; then echo "✗ Error: Firmware download failed." && exit 1; fi
+        
+        # Extract AP file
+        echo "==> Extracting AP file..."
         AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar\.md5" | head -n 1)
         unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
         rm "stock_firmware.zip"
         
+        # Extract super.img.lz4
+        echo "==> Extracting super.img.lz4..."
         tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4'
         rm "$AP_FILENAME"
+        
+        # Decompress LZ4
+        echo "==> Decompressing LZ4..."
         SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
         lz4 -d "$SUPER_LZ4" stock_super_sparse.img
         rm "$SUPER_LZ4"
@@ -101,6 +129,7 @@ jobs:
     - name: Download Custom System
       run: |
         cd work
+        echo "==> Downloading Custom ROM..."
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         FILE_TYPE=$(file -b custom_rom_package)
         
@@ -110,6 +139,11 @@ jobs:
           *"XZ compressed"*) mv custom_rom_package c.img.xz && unxz c.img.xz && mv c.img custom_system.img ;;
           *"Zip archive"*) 
              unzip -o custom_rom_package 
+             SYSTEM_IMG=$(find . -name "system.img" -o -name "system.raw.img" | head -n 1)
+             mv "$SYSTEM_IMG" custom_system.img 
+             ;;
+          *"7-zip archive"*)
+             7z x custom_rom_package
              SYSTEM_IMG=$(find . -name "system.img" -o -name "system.raw.img" | head -n 1)
              mv "$SYSTEM_IMG" custom_system.img 
              ;;
@@ -160,12 +194,8 @@ jobs:
               else
                  echo "==> Could not extract build.prop. Skipping."
               fi
-            elif [ "$FS_TYPE" = "erofs" ]; then
-               echo "==> EROFS detected. This is Read-Only."
-               echo "==> Skipping branding injection to prevent build failure."
-               echo "==> To modify EROFS, full unpack/repack tools are required which is experimental."
             else
-               echo "==> Unknown or Generic filesystem ($FS_TYPE). Skipping branding."
+               echo "==> Filesystem is $FS_TYPE (EROFS/F2FS/Other). Skipping branding to ensure stability."
             fi
           '
 
@@ -185,6 +215,7 @@ jobs:
       id: package
       run: |
         cd work
+        if [ ! -f "repacked_super.img" ]; then echo "✗ Error: Repack failed, image not found." && exit 1; fi
         mv repacked_super.img super.img
         TAR_NAME="repacked_super_$(date +%Y%m%d).tar"
         tar -cvf "$TAR_NAME" super.img
