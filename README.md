@@ -1,10 +1,5 @@
 # 🚀 Custom ROM Your New Samsung Laggy Budget Devices NOW
 
-# 🛑 STOP - READ THIS FIRST
-This tool ONLY works with ext4 ROMs. If your ROM uses erofs, it WILL FAIL.
-Don't skip this warning then complain in issues when it doesn't work.
-
-
 Tired of your Samsung budget phone lagging like it's stuck in molasses? This GitHub Actions workflow is your ticket to reviving devices like the Galaxy A04s, A05, A05s, A06, A16—or any Samsung phone with a super partition and Project Treble support (sorry A12 users, check compatibility first).
 
 It replaces the bloated stock system with a lightweight custom ROM by rebuilding your super.img. No complex setup. No terminal sorcery. Just a few clicks and URLs.
@@ -170,7 +165,7 @@ Some basic flashing knowledge (Odin or Heimdall)
 - **"AP file not found"**: Make sure you're using the AP_*.tar.md5 file, not just any firmware blob.
 - **"Unsupported file format"**: Use a proper .img, .xz, .gz, or .zip with system.img inside.
 - **Not booting?**: Format data in recovery, check your ROM architecture (arm64-ab), and ensure the Android version matches or exceeds stock.
-- Btw i recommend using an custom ROM using ext4, erofs wont work
+- Btw i recommend using an custom ROM using ext4
 
 ---
 
