@@ -24,7 +24,7 @@ on:
         description: 'Upload to Release?'
         required: true
         type: boolean
-        default: true
+        default: false
       empty_product:
         description: 'Use empty product.img (-e)'
         required: false
