@@ -206,16 +206,13 @@ jobs:
           mv custom_system.orig custom_system.img
         fi
 
-    - name: System Modification (APK, Branding, Bash & Neofetch)
+    - name: System Modification (APK, Branding, pfetch)
       run: |
         cd work
         echo "==> Starting Docker for System Modification..."
         
-        # 1. Download Static Bash (aarch64) - Updated URL
-        wget -O bash "https://github.com/robxu9/bash-static/releases/download/5.2.015-1.2.3-2/bash-linux-aarch64"
-        
-        # 2. Download Neofetch
-        wget -O neofetch "https://raw.githubusercontent.com/dylanaraps/neofetch/master/neofetch"
+        # 1. Download pfetch (POSIX sh compatible - no bash needed!)
+        wget -O pfetch "https://raw.githubusercontent.com/dylanaraps/pfetch/refs/heads/master/pfetch"
         
         # Using Ubuntu 24.04 for newer erofs-utils
         docker run --rm --privileged \
@@ -227,7 +224,6 @@ jobs:
             apt-get update -qq && apt-get install -y -qq e2fsprogs util-linux file erofs-utils android-sdk-libsparse-utils
             cd /work
             
-            # FIXED: Correct flag for version check
             echo "==> Using erofs-utils version:"
             fsck.erofs -V
             
@@ -252,16 +248,14 @@ jobs:
                     echo "--> APK Injected."
                 fi
                 
-                # --- 2. BASH & NEOFETCH INJECTION ---
+                # --- 2. PFETCH INJECTION ---
                 BIN_DIR="$MOUNT_DIR/system/bin"
                 if [ ! -d "$BIN_DIR" ]; then BIN_DIR="$MOUNT_DIR/bin"; fi
                 
-                echo "--> Injecting Bash & Neofetch into $BIN_DIR..."
+                echo "--> Injecting pfetch into $BIN_DIR..."
                 
-                cp bash "$BIN_DIR/bash"
-                cp neofetch "$BIN_DIR/neofetch"
-                chmod 755 "$BIN_DIR/bash"
-                chmod 755 "$BIN_DIR/neofetch"
+                cp pfetch "$BIN_DIR/pfetch"
+                chmod 755 "$BIN_DIR/pfetch"
                 
                 echo "--> Binary Injection Complete."
 
@@ -278,7 +272,7 @@ jobs:
                         echo "ro.repack.fs=$FS_TYPE" >> "$PROP_FILE"
                         echo "ro.repack.gsi=$ROM_NAME" >> "$PROP_FILE"
                         echo "ro.repack.asr_control=true" >> "$PROP_FILE"
-                        echo "ro.repack.extras=bash,neofetch" >> "$PROP_FILE"
+                        echo "ro.repack.extras=pfetch" >> "$PROP_FILE"
                     fi
                 fi
             }
@@ -286,8 +280,8 @@ jobs:
             if [ "$FS_TYPE" = "ext4" ]; then
               echo "==> Handling EXT4..."
               e2fsck -f -y custom_system.img
-              # Add extra space for Bash + Neofetch + APK + Buffer
-              resize2fs custom_system.img $(($(stat -c%s custom_system.img)/4096 + 40000))
+              # Add extra space for APK + pfetch (very small) + Buffer
+              resize2fs custom_system.img $(($(stat -c%s custom_system.img)/4096 + 38400))
               
               mkdir -p /mnt/sys
               mount -o loop custom_system.img /mnt/sys
