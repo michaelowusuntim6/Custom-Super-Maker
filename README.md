@@ -42,7 +42,7 @@ Most budget Samsungs don't have official TWRP builds. Without TWRP, flashing a G
 *   Navigate to the **Actions** tab and enable them.
 
 ### 2. Configure & Run
-Choose the **"Android Super Partition Repack"** workflow and hit **Run Workflow**:
+Choose the **"Android Super Repack (Universal FS)"** workflow and hit **Run Workflow**:
 
 | Input | Instruction |
 | :--- | :--- |
