@@ -29,12 +29,12 @@ on:
         description: 'Use empty product.img (-e)'
         required: false
         type: boolean
-        default: false
+        default: true
       empty_system_ext:
         description: 'Use empty system_ext.img (-x)'
         required: false
         type: boolean
-        default: false
+        default: true
       silent_mode:
         description: 'Silent mode (-s)'
         required: false
@@ -107,18 +107,22 @@ jobs:
         if [ ! -s "stock_firmware.zip" ]; then echo "✗ Error: Firmware download failed." && exit 1; fi
         
         echo "==> Extracting AP file..."
-        AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar\.md5" | head -n 1)
+        AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar(\.md5)?" | head -n 1)
         unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
         rm "stock_firmware.zip"
         
-        echo "==> Extracting super.img.lz4..."
-        tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4'
+        echo "==> Extracting super.img.lz4 from $AP_FILENAME..."
+        tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4' || tar -xvf "$AP_FILENAME" --wildcards '*super.img*'
         rm "$AP_FILENAME"
         
         echo "==> Decompressing LZ4..."
-        SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
-        lz4 -d "$SUPER_LZ4" stock_super_sparse.img
-        rm "$SUPER_LZ4"
+        if ls *super.img*.lz4 1> /dev/null 2>&1; then
+          SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
+          lz4 -d "$SUPER_LZ4" stock_super_sparse.img
+          rm "$SUPER_LZ4"
+        else
+          mv super.img stock_super_sparse.img
+        fi
 
     - name: Download and Extract Custom System
       run: |
@@ -285,6 +289,14 @@ jobs:
 
     - name: Run Repack
       run: |
+        # Fix for 32GB Model: Force Super Size to 4GB
+        FIXED_SIZE=4294967296
+        sed -i "s/block_device_table_size=\$retval/block_device_table_size=$FIXED_SIZE/g" repacksuper.sh
+        sed -i "s/groups_max_size=\$retval/groups_max_size=$FIXED_SIZE/g" repacksuper.sh
+        
+        # Fix for naming bug: Ensure filename is exactly custom_system.img
+        cp work/custom_system.img work/custom_system.img
+
         FLAGS="-r $(pwd)/work"
         if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
