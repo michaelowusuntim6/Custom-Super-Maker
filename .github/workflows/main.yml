@@ -178,7 +178,6 @@ jobs:
               resize2fs -f custom_system.img
               mkdir -p /mnt/sys
               mount -o loop custom_system.img /mnt/sys
-              # (Injection Logic Here)
               umount /mnt/sys
               resize2fs -M custom_system.img
             fi
