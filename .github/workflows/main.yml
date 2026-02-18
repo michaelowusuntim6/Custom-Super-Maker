@@ -83,20 +83,8 @@ jobs:
       run: |
         cd work
         PRESET="${{ github.event.inputs.device_preset }}"
-        
-        if [[ "$PRESET" == "Samsung A04s (64GB)" ]]; then
-          echo "==> Downloading Samsung A04s Firmware..."
-          gdown --output stock_firmware.zip '1C9GtYTn1EZ4sQN7qfJeWN6gxDj_WbgY-'
-          
-        elif [[ "$PRESET" == "Samsung A15 (128/256GB)" ]]; then
-          echo "==> Downloading Samsung A15 Firmware..."
-          gdown --output stock_firmware.zip '12FoeBkPDHddj4lzd-T6pjHRQ8Ey3c2U8'
-          
-        else
-          echo "==> Using Custom URL..."
+        if [[ "$PRESET" == "none (Use Custom URL below)" ]]; then
           FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
-          if [ -z "$FIRMWARE_URL" ]; then echo "✗ Error: No URL provided." && exit 1; fi
-          
           if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then 
             megadl -o stock_firmware.zip "$FIRMWARE_URL"
           else 
@@ -104,88 +92,31 @@ jobs:
           fi
         fi
         
-        if [ ! -s "stock_firmware.zip" ]; then echo "✗ Error: Download failed." && exit 1; fi
-        
         echo "==> Extracting AP file..."
         AP_FILENAME=$(unzip -l "stock_firmware.zip" | grep -i -o -E "AP_.*\.tar\.md5" | head -n 1)
         unzip -o -j "stock_firmware.zip" "$AP_FILENAME"
-        rm "stock_firmware.zip"
         
         echo "==> Extracting super.img.lz4..."
         tar -xvf "$AP_FILENAME" --wildcards '*super.img*.lz4'
-        rm "$AP_FILENAME"
         
         echo "==> Decompressing LZ4..."
         SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
         lz4 -d "$SUPER_LZ4" stock_super_sparse.img
-        rm "$SUPER_LZ4"
 
     - name: Download and Extract Custom System
       run: |
         cd work
-        ROM_URL="${{ github.event.inputs.custom_system_url }}"
-        wget -O custom_rom_package "$ROM_URL"
-        
+        wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         FILE_DESC=$(file -b custom_rom_package)
         if [[ "$FILE_DESC" == *"XZ compressed"* ]]; then
-            mv custom_rom_package c.img.xz
-            unxz c.img.xz
-            mv c.img custom_system.img
-        elif [[ "$FILE_DESC" == *"Zip archive"* ]]; then
-            unzip -o custom_rom_package
-        elif [[ "$FILE_DESC" == *"7-zip archive"* ]]; then
-            7z x custom_rom_package
-        elif [[ "$FILE_DESC" == *"gzip compressed"* ]]; then
-            mv custom_rom_package c.img.gz
-            gzip -d c.img.gz
-            mv c.img custom_system.img
+            unxz -c custom_rom_package > custom_system.img
         else
             mv custom_rom_package custom_system.img
         fi
-        
-        if [ ! -f "custom_system.img" ]; then
-            IMG_FILE=$(find . -type f -name "*.img" ! -name "stock_super_sparse.img" | head -n 1)
-            mv "$IMG_FILE" custom_system.img
-        fi
-
-    - name: Download ASRControl APK
-      run: |
-        cd work
-        wget -O ASRControl.apk "https://github.com/minhmc2007/minhmc2007/releases/download/v0.0.1/app-debug.apk"
-
-    - name: Ensure Raw Image
-      run: |
-        cd work
-        mv custom_system.img custom_system.orig
-        if simg2img custom_system.orig custom_system.img; then
-          rm custom_system.orig
-        else
-          mv custom_system.orig custom_system.img
-        fi
-
-    - name: System Modification (APK, Branding, pfetch)
-      run: |
-        cd work
-        wget -O pfetch "https://raw.githubusercontent.com/dylanaraps/pfetch/refs/heads/master/pfetch"
-        
-        docker run --rm --privileged -v "$(pwd):/work" ubuntu:24.04 bash -c '
-            apt-get update -qq && apt-get install -y -qq e2fsprogs util-linux file erofs-utils
-            cd /work
-            FS_TYPE=$(blkid -o value -s TYPE custom_system.img 2>/dev/null || echo "ext4")
-            
-            if [ "$FS_TYPE" = "ext4" ]; then
-              truncate -s +2G custom_system.img
-              resize2fs -f custom_system.img
-              mkdir -p /mnt/sys
-              mount -o loop custom_system.img /mnt/sys
-              umount /mnt/sys
-              resize2fs -M custom_system.img
-            fi
-          '
 
     - name: Run Repack
       run: |
-        # Fix for 32GB Model: Force Super Size to 4GB
+        # Force 4GB size for 32GB storage limit
         FIXED_SIZE=4294967296
         sed -i "s/block_device_table_size=\$retval/block_device_table_size=$FIXED_SIZE/g" repacksuper.sh
         sed -i "s/groups_max_size=\$retval/groups_max_size=$FIXED_SIZE/g" repacksuper.sh
@@ -194,20 +125,18 @@ jobs:
         if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
         if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
-        if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
         
+        # Calling the script directly without any 'cp' commands to avoid 'same file' errors
         ./repacksuper.sh $FLAGS work/stock_super_sparse.img work/custom_system.img work/repacked_super.img
 
     - name: Create Tarball
-      id: package
       run: |
         cd work
         mv repacked_super.img super.img
         tar -cvf "repacked_super.tar" super.img
-        echo "tar_path=work/repacked_super.tar" >> $GITHUB_OUTPUT
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: repacked-super-image
-        path: ${{ steps.package.outputs.tar_path }}
+        path: work/repacked_super.tar
